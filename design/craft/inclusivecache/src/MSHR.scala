@@ -48,6 +48,7 @@ class MSHRStatus(params: InclusiveCacheParameters) extends InclusiveCacheBundle(
   val nestB  = Bool()
   val blockC = Bool()
   val nestC  = Bool()
+  val is_hint = Bool()
 }
 
 class NestedWriteback(params: InclusiveCacheParameters) extends InclusiveCacheBundle(params)
@@ -171,6 +172,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   // own inner probes. Thus every probe wakes exactly one MSHR.
   io.status.bits.blockC := !meta_valid
   io.status.bits.nestC  := meta_valid && (!w_rprobeackfirst || !w_pprobeackfirst || !w_grantfirst)
+  io.status.bits.is_hint := request.opcode === Hint
   // The w_grantfirst in nestC is necessary to deal with:
   //   acquire waiting for grant, inner release gets queued, outer probe -> inner probe -> deadlock
   // ... this is possible because the release+probe can be for same set, but different tag
@@ -213,6 +215,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
 
   // Resulting meta-data
   val final_meta_writeback = WireInit(meta)
+  final_meta_writeback.prefetched := false.B
 
   val req_clientBit = params.clientBit(request.source)
   val req_needT = needT(request.opcode, request.param)
@@ -246,6 +249,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
                                     Mux(req_acquire, req_clientBit, 0.U)
     final_meta_writeback.tag := request.tag
     final_meta_writeback.hit := true.B
+    final_meta_writeback.prefetched := (request.opcode === Hint)
   }
 
   when (bad_grant) {
@@ -270,6 +274,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   invalid.state   := INVALID
   invalid.clients := 0.U
   invalid.tag     := 0.U
+  invalid.prefetched := false.B
 
   // Just because a client says BtoT, by the time we process the request he may be N.
   // Therefore, we must consult our own meta-data state to confirm he owns the line still.

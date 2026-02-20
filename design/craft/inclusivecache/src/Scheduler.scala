@@ -21,8 +21,40 @@ import chisel3._
 import chisel3.util._
 import freechips.rocketchip.diplomacy.AddressSet
 import freechips.rocketchip.tilelink._
+import freechips.rocketchip.tilelink.TLMessages._
 import freechips.rocketchip.util._
 import chisel3.experimental.dataview._
+
+
+// Super sketch chat-gpt generated final print lmaoo
+class PrefetchCounterFinalPrint extends BlackBox with HasBlackBoxInline {
+  val io = IO(new Bundle {
+    val ctr_prefetch_req        = Input(UInt(64.W))
+    val ctr_prefetch_miss       = Input(UInt(64.W))
+    val ctr_prefetch_hit        = Input(UInt(64.W))
+    val ctr_prefetch_blocked    = Input(UInt(64.W))
+    val ctr_demand_hit_prefetch = Input(UInt(64.W))
+    val ctr_late_prefetch       = Input(UInt(64.W))
+  })
+  setInline("PrefetchCounterFinalPrint.sv",
+    s"""|module PrefetchCounterFinalPrint(
+        |  input [63:0] ctr_prefetch_req,
+        |  input [63:0] ctr_prefetch_miss,
+        |  input [63:0] ctr_prefetch_hit,
+        |  input [63:0] ctr_prefetch_blocked,
+        |  input [63:0] ctr_demand_hit_prefetch,
+        |  input [63:0] ctr_late_prefetch
+        |);
+        |`ifndef SYNTHESIS
+        |  final begin
+        |    $$display("L2_PREFETCH_FINAL req=%0d miss=%0d hit_useless=%0d blocked=%0d demand_hit_pf=%0d late_pf=%0d",
+        |      ctr_prefetch_req, ctr_prefetch_miss, ctr_prefetch_hit,
+        |      ctr_prefetch_blocked, ctr_demand_hit_prefetch, ctr_late_prefetch);
+        |  end
+        |`endif
+        |endmodule
+        |""".stripMargin)
+}
 
 class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Module
 {
@@ -64,6 +96,24 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   sinkX.io.x <> io.req
 
   io.out.b.ready := true.B // disconnected
+
+  // Prefetch performance counters
+  val ctr_prefetch_req        = RegInit(0.U(64.W))
+  val ctr_prefetch_miss       = RegInit(0.U(64.W))
+  val ctr_prefetch_hit        = RegInit(0.U(64.W))
+  val ctr_prefetch_blocked    = RegInit(0.U(64.W))
+  val ctr_demand_hit_prefetch = RegInit(0.U(64.W))
+  val ctr_late_prefetch       = RegInit(0.U(64.W))
+
+  // Prefetch requests accepted by SinkA (L2)
+  when (sinkA.io.req.fire && sinkA.io.req.bits.opcode === Hint) {
+    ctr_prefetch_req := ctr_prefetch_req + 1.U
+  }
+
+  // Prefetch blocked (Hint valid but backpressured by L2)
+  when (sinkA.io.req.valid && sinkA.io.req.bits.opcode === Hint && !sinkA.io.req.ready) {
+    ctr_prefetch_blocked := ctr_prefetch_blocked + 1.U
+  }
 
   val directory = Module(new Directory(params))
   val bankedStore = Module(new BankedStore(params))
@@ -201,6 +251,13 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     Mux(lowerMatches(params.mshrs-2), 1.U << (params.mshrs-2),
     lowerMatches))
 
+  // Late prefetch — demand request queues behind in-flight prefetch MSHR
+  val matched_mshr_is_hint = Mux1H(lowerMatches1, mshrs.map(_.io.status.bits.is_hint))
+  when (request.valid && request.ready && queue && request.bits.prio(0) &&
+        request.bits.opcode =/= Hint && matched_mshr_is_hint) {
+    ctr_late_prefetch := ctr_late_prefetch + 1.U
+  }
+
   // If this goes to the scheduled MSHR, it may need to be bypassed
   // Alternatively, the MSHR may be refilled from a request queued in the ListBuffer
   val selected_requests = Cat(mshr_selectOH, mshr_selectOH, mshr_selectOH) & requests.io.valid
@@ -310,6 +367,23 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     m.io.directory.bits := directory.io.result.bits
   }
 
+  // Using directory result
+  val alloc_is_hint   = params.dirReg(RegNext(alloc_uses_directory && request.bits.opcode === Hint && request.bits.prio(0)))
+  val alloc_is_demand = params.dirReg(RegNext(alloc_uses_directory && request.bits.opcode =/= Hint && request.bits.prio(0) && !request.bits.control))
+
+  // Prefetch miss (Hint allocated MSHR, directory says miss--prefetching stuff not already in L2)
+  when (alloc_is_hint && directory.io.result.valid && !directory.io.result.bits.hit) {
+    ctr_prefetch_miss := ctr_prefetch_miss + 1.U
+  }
+  // Counter 3: Prefetch hit useless (Hint allocated MSHR, directory says hit--prefetching stuff already in L2)
+  when (alloc_is_hint && directory.io.result.valid && directory.io.result.bits.hit) {
+    ctr_prefetch_hit := ctr_prefetch_hit + 1.U
+  }
+  // Counter 5: Demand hit prefetched (demand hits line previously brought in by prefetch)
+  when (alloc_is_demand && directory.io.result.valid && directory.io.result.bits.hit && directory.io.result.bits.prefetched) {
+    ctr_demand_hit_prefetch := ctr_demand_hit_prefetch + 1.U
+  }
+
   // MSHR response meta-data fetch
   sinkC.io.way :=
     Mux(bc_mshr.io.status.valid && bc_mshr.io.status.bits.set === sinkC.io.set,
@@ -348,5 +422,14 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   private def setBits = params.addressMapping.drop(params.offsetBits).take(params.setBits).mkString(",")
   private def tagBits = params.addressMapping.drop(params.offsetBits + params.setBits).take(params.tagBits).mkString(",")
   private def simple = s""""reset":"${reset.pathName}","tagBits":[${tagBits}],"setBits":[${setBits}],"blockBytes":${params.cache.blockBytes},"ways":${params.cache.ways}"""
+  // Print prefetch counters at end of simulation via Verilog final block, pretty sketch
+  val finalPrint = Module(new PrefetchCounterFinalPrint)
+  finalPrint.io.ctr_prefetch_req        := ctr_prefetch_req
+  finalPrint.io.ctr_prefetch_miss       := ctr_prefetch_miss
+  finalPrint.io.ctr_prefetch_hit        := ctr_prefetch_hit
+  finalPrint.io.ctr_prefetch_blocked    := ctr_prefetch_blocked
+  finalPrint.io.ctr_demand_hit_prefetch := ctr_demand_hit_prefetch
+  finalPrint.io.ctr_late_prefetch       := ctr_late_prefetch
+
   def json: String = s"""{"addresses":[${addresses}],${simple},"directory":${directory.json},"subbanks":${bankedStore.json}}"""
 }
