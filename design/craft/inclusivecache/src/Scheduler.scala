@@ -369,7 +369,7 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
 
   // Using directory result
   val alloc_is_hint   = params.dirReg(RegNext(alloc_uses_directory && request.bits.opcode === Hint && request.bits.prio(0)))
-  val alloc_is_demand = params.dirReg(RegNext(alloc_uses_directory && request.bits.opcode =/= Hint && request.bits.prio(0) && !request.bits.control))
+  val alloc_is_demand = params.dirReg(RegNext(alloc_uses_directory && request.bits.opcode =/= Hint && request.bits.prio(0) && !request.bits.control.flush && !request.bits.control.invalidate))
 
   // Prefetch miss (Hint allocated MSHR, directory says miss--prefetching stuff not already in L2)
   when (alloc_is_hint && directory.io.result.valid && !directory.io.result.bits.hit) {
