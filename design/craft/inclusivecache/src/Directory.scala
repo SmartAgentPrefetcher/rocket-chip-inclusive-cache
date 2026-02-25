@@ -33,6 +33,7 @@ class DirectoryEntry(params: InclusiveCacheParameters) extends InclusiveCacheBun
   val clients = UInt(params.clientBits.W)
   val tag     = UInt(params.tagBits.W)
   val prefetched = Bool()
+  val prefetch_brought = Bool() // true only when prefetch actually missed (brought new data)
 }
 
 class DirectoryWrite(params: InclusiveCacheParameters) extends InclusiveCacheBundle(params)

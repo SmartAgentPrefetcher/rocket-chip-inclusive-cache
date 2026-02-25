@@ -24,6 +24,7 @@ import freechips.rocketchip.tilelink._
 import freechips.rocketchip.tilelink.TLMessages._
 import freechips.rocketchip.util._
 import chisel3.experimental.dataview._
+import midas.targetutils.PerfCounter
 
 
 // Super sketch chat-gpt generated final print lmaoo
@@ -35,6 +36,8 @@ class PrefetchCounterFinalPrint extends BlackBox with HasBlackBoxInline {
     val ctr_prefetch_blocked    = Input(UInt(64.W))
     val ctr_demand_hit_prefetch = Input(UInt(64.W))
     val ctr_late_prefetch       = Input(UInt(64.W))
+    val ctr_demand_miss         = Input(UInt(64.W))
+    val ctr_demand_hit_pf_useful = Input(UInt(64.W))
   })
   setInline("PrefetchCounterFinalPrint.sv",
     s"""|module PrefetchCounterFinalPrint(
@@ -43,13 +46,15 @@ class PrefetchCounterFinalPrint extends BlackBox with HasBlackBoxInline {
         |  input [63:0] ctr_prefetch_hit,
         |  input [63:0] ctr_prefetch_blocked,
         |  input [63:0] ctr_demand_hit_prefetch,
-        |  input [63:0] ctr_late_prefetch
+        |  input [63:0] ctr_late_prefetch,
+        |  input [63:0] ctr_demand_miss,
+        |  input [63:0] ctr_demand_hit_pf_useful
         |);
         |`ifndef SYNTHESIS
         |  final begin
-        |    $$display("L2_PREFETCH_FINAL req=%0d miss=%0d hit_useless=%0d blocked=%0d demand_hit_pf=%0d late_pf=%0d",
+        |    $$display("L2_PREFETCH_FINAL req=%0d miss=%0d hit_useless=%0d blocked=%0d demand_hit_pf=%0d late_pf=%0d demand_miss=%0d demand_hit_pf_useful=%0d",
         |      ctr_prefetch_req, ctr_prefetch_miss, ctr_prefetch_hit,
-        |      ctr_prefetch_blocked, ctr_demand_hit_prefetch, ctr_late_prefetch);
+        |      ctr_prefetch_blocked, ctr_demand_hit_prefetch, ctr_late_prefetch, ctr_demand_miss, ctr_demand_hit_pf_useful);
         |  end
         |`endif
         |endmodule
@@ -104,6 +109,8 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   val ctr_prefetch_blocked    = RegInit(0.U(64.W))
   val ctr_demand_hit_prefetch = RegInit(0.U(64.W))
   val ctr_late_prefetch       = RegInit(0.U(64.W))
+  val ctr_demand_miss         = RegInit(0.U(64.W))
+  val ctr_demand_hit_pf_useful = RegInit(0.U(64.W))
 
   // Prefetch requests accepted by SinkA (L2)
   when (sinkA.io.req.fire && sinkA.io.req.bits.opcode === Hint) {
@@ -383,6 +390,33 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   when (alloc_is_demand && directory.io.result.valid && directory.io.result.bits.hit && directory.io.result.bits.prefetched) {
     ctr_demand_hit_prefetch := ctr_demand_hit_prefetch + 1.U
   }
+  // Counter 7: Demand miss (demand request misses in L2 directory)
+  when (alloc_is_demand && directory.io.result.valid && !directory.io.result.bits.hit) {
+    ctr_demand_miss := ctr_demand_miss + 1.U
+  }
+  // Counter 8: Demand hit on line that prefetch actually brought in (prefetch was a miss)
+  when (alloc_is_demand && directory.io.result.valid && directory.io.result.bits.hit && directory.io.result.bits.prefetch_brought) {
+    ctr_demand_hit_pf_useful := ctr_demand_hit_pf_useful + 1.U
+  }
+
+  // AutoCounter (PerfCounter) annotations for FireSim
+  val evt_prefetch_req     = sinkA.io.req.fire && sinkA.io.req.bits.opcode === Hint
+  val evt_prefetch_blocked = sinkA.io.req.valid && sinkA.io.req.bits.opcode === Hint && !sinkA.io.req.ready
+  val evt_prefetch_miss    = alloc_is_hint && directory.io.result.valid && !directory.io.result.bits.hit
+  val evt_prefetch_hit     = alloc_is_hint && directory.io.result.valid && directory.io.result.bits.hit
+  val evt_demand_hit_pf    = alloc_is_demand && directory.io.result.valid && directory.io.result.bits.hit && directory.io.result.bits.prefetched
+  val evt_demand_miss      = alloc_is_demand && directory.io.result.valid && !directory.io.result.bits.hit
+  val evt_demand_hit_pf_useful = alloc_is_demand && directory.io.result.valid && directory.io.result.bits.hit && directory.io.result.bits.prefetch_brought
+  val evt_late_prefetch    = request.valid && request.ready && queue && request.bits.prio(0) && request.bits.opcode =/= Hint && matched_mshr_is_hint
+
+  PerfCounter(evt_prefetch_req,         "l2_prefetch_req",         "L2 prefetch Hint requests accepted")
+  PerfCounter(evt_prefetch_blocked,     "l2_prefetch_blocked",     "L2 prefetch Hint requests backpressured")
+  PerfCounter(evt_prefetch_miss,        "l2_prefetch_miss",        "L2 prefetch misses (useful, brought new data)")
+  PerfCounter(evt_prefetch_hit,         "l2_prefetch_hit_useless", "L2 prefetch hits (useless, data already present)")
+  PerfCounter(evt_demand_hit_pf,        "l2_demand_hit_pf",        "L2 demand hits on prefetched lines")
+  PerfCounter(evt_demand_miss,          "l2_demand_miss",          "L2 demand misses")
+  PerfCounter(evt_demand_hit_pf_useful, "l2_demand_hit_pf_useful", "L2 demand hits on lines prefetch actually brought in")
+  PerfCounter(evt_late_prefetch,        "l2_late_prefetch",        "L2 demand queued behind in-flight prefetch")
 
   // MSHR response meta-data fetch
   sinkC.io.way :=
@@ -430,6 +464,8 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   finalPrint.io.ctr_prefetch_blocked    := ctr_prefetch_blocked
   finalPrint.io.ctr_demand_hit_prefetch := ctr_demand_hit_prefetch
   finalPrint.io.ctr_late_prefetch       := ctr_late_prefetch
+  finalPrint.io.ctr_demand_miss         := ctr_demand_miss
+  finalPrint.io.ctr_demand_hit_pf_useful := ctr_demand_hit_pf_useful
 
   def json: String = s"""{"addresses":[${addresses}],${simple},"directory":${directory.json},"subbanks":${bankedStore.json}}"""
 }

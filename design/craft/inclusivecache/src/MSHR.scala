@@ -217,6 +217,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   // Resulting meta-data
   val final_meta_writeback = WireInit(meta)
   final_meta_writeback.prefetched := false.B
+  final_meta_writeback.prefetch_brought := false.B
 
   val req_clientBit = params.clientBit(request.source)
   val req_needT = needT(request.opcode, request.param)
@@ -251,6 +252,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
     final_meta_writeback.tag := request.tag
     final_meta_writeback.hit := true.B
     final_meta_writeback.prefetched := (request.opcode === Hint)
+    final_meta_writeback.prefetch_brought := (request.opcode === Hint && !meta.hit)
   }
 
   when (bad_grant) {
@@ -276,6 +278,7 @@ class MSHR(params: InclusiveCacheParameters) extends Module
   invalid.clients := 0.U
   invalid.tag     := 0.U
   invalid.prefetched := false.B
+  invalid.prefetch_brought := false.B
 
   // Just because a client says BtoT, by the time we process the request he may be N.
   // Therefore, we must consult our own meta-data state to confirm he owns the line still.
