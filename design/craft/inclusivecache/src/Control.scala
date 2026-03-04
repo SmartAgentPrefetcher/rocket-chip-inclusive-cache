@@ -41,6 +41,7 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
       val flush_req = Decoupled(UInt(64.W))
       val invalidate_req = Output(Bool()) // Don't release block to main memory, just clear from directory
       val flush_resp = Input(Bool())
+      val trigger_pulse = Output(Bool())
     })
     // Flush directive
     val flushInValid   = RegInit(false.B)
@@ -48,6 +49,9 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
     val flushIsInvalidate = Reg(Bool())
     val flushOutValid  = RegInit(false.B)
     val flushOutReady  = WireInit(init = false.B)
+    val triggerWriteFire = WireInit(false.B)
+
+    io.trigger_pulse := RegNext(triggerWriteFire, false.B)
 
     when (flushOutReady) { flushOutValid := false.B }
     when (io.flush_resp) { flushOutValid := true.B }
@@ -101,6 +105,11 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
       (!flushInValid, flushOutValid)
     }), RegFieldDesc("Invalidate64", "Invalidate the phsyical address equal to the 64-bit written data from the cache"))
 
+    val trigger = RegField.w(1, RegWriteFn((ivalid, oready, data) => {
+      when (ivalid) { triggerWriteFire := true.B }
+      (true.B, true.B)
+    }), RegFieldDesc("Trigger", "Generate one-cycle trigger pulse for inclusive-cache debug printing"))
+
     // Information about the cache configuration
     val banksR  = RegField.r(8, outer.node.edges.in.size.U,         RegFieldDesc("Banks",
       "Number of banks in the cache", reset=Some(outer.node.edges.in.size)))
@@ -117,6 +126,7 @@ class InclusiveCacheControl(outer: InclusiveCache, control: InclusiveCacheContro
       0x240 -> Seq(flush32),
       0x280 -> (if (control.beatBytes >= 8) Seq(invalidate64) else Nil),
       0x2c0 -> Seq(invalidate32),
+      0x300 -> Seq(trigger),
     )
   }
 }

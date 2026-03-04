@@ -72,6 +72,7 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
     // Control port
     val req = Flipped(Decoupled(new SinkXRequest(params)))
     val resp = Decoupled(new SourceXRequest(params))
+    val trigger = Input(Bool()) // for testing: trigger to print prefetch counters 
   })
 
   val sourceA = Module(new SourceA(params))
@@ -457,6 +458,9 @@ class InclusiveCacheBankScheduler(params: InclusiveCacheParameters) extends Modu
   private def tagBits = params.addressMapping.drop(params.offsetBits + params.setBits).take(params.tagBits).mkString(",")
   private def simple = s""""reset":"${reset.pathName}","tagBits":[${tagBits}],"setBits":[${setBits}],"blockBytes":${params.cache.blockBytes},"ways":${params.cache.ways}"""
   // Print prefetch counters at end of simulation via Verilog final block, pretty sketch
+  when (io.trigger) {
+    printf(p"L2_PREFETCH_TRIG req=${ctr_prefetch_req} miss=${ctr_prefetch_miss} hit_useless=${ctr_prefetch_hit} blocked=${ctr_prefetch_blocked} demand_hit_pf=${ctr_demand_hit_prefetch} late_pf=${ctr_late_prefetch} demand_miss=${ctr_demand_miss} demand_hit_pf_useful=${ctr_demand_hit_pf_useful}\n")
+  }
   val finalPrint = Module(new PrefetchCounterFinalPrint)
   finalPrint.io.ctr_prefetch_req        := ctr_prefetch_req
   finalPrint.io.ctr_prefetch_miss       := ctr_prefetch_miss

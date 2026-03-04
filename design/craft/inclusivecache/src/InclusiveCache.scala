@@ -122,6 +122,8 @@ class InclusiveCache(
       println("")
     }
 
+    val mmioTriggerPulse = ctrls.map(_.module.io.trigger_pulse).foldLeft(false.B)(_||_)
+
     // Create the L2 Banks
     val mods = (node.in zip node.out) map { case ((in, edgeIn), (out, edgeOut)) =>
       edgeOut.manager.managers.foreach { m =>
@@ -146,6 +148,7 @@ class InclusiveCache(
       scheduler.io.req.bits.address := 0.U
       scheduler.io.req.bits.invalidate := false.B
       scheduler.io.resp.ready := true.B
+      scheduler.io.trigger := mmioTriggerPulse
 
 
       // Fix-up the missing addresses. We do this here so that the Scheduler can be
